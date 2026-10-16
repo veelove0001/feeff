@@ -6,19 +6,40 @@ extension EditorSession {
         guard let document else { return nil }
         var images: [UUID: ImportedImage] = [:]
         var masks: [UUID: ImportedImage] = [:]
+        var animations: [UUID: GIFAnimation] = [:]
+        var frameMasks: [UUID: [Int: LayerMask]] = [:]
         let layers = document.layers.map { layer in
-            if let asset = layer.asset { images[layer.id] = asset }
+            let asset = displayedAsset(for: layer)
+            if let asset { images[layer.id] = asset }
             if let mask = layer.mask { masks[layer.id] = mask.asset }
+            var gif: ProjectGIFRecord?
+            if let animation = currentGIFAnimation(for: layer) {
+                animations[layer.id] = animation
+                frameMasks[layer.id] = layer.gifFrameMasks
+                let records = layer.gifFrameMasks.keys.sorted().compactMap { index -> ProjectGIFMaskRecord? in
+                    guard let mask = layer.gifFrameMasks[index] else { return nil }
+                    return ProjectGIFMaskRecord(index: index, maskFile: "\(layer.id.uuidString).frame-\(index).mask.png",
+                                                isEnabled: mask.isEnabled, placement: mask.placement, isLinked: mask.isLinked)
+                }
+                gif = ProjectGIFRecord(sourceFile: "\(layer.id.uuidString).gif", selectedFrameIndex: animation.selectedFrameIndex,
+                    geometry: animation.geometry, frameMasks: records,
+                    framePixels: animation.framePixels.keys.sorted().map {
+                        ProjectGIFPixelsRecord(index: $0, imageFile: "\(layer.id.uuidString).frame-\($0).png")
+                    }, deletedFrameIndices: animation.deletedFrameIndices.sorted(), frameOrder: animation.frameOrder,
+                    timing: animation.timing == GIFFrameTiming() ? nil : ProjectGIFTimingRecord(animation.timing))
+            }
             return ProjectLayerRecord(id: layer.id, name: layer.name, isVisible: layer.isVisible,
-                transform: layer.transform, imageFile: layer.asset?.file(for: layer.id), parentID: layer.parentID, isGroup: layer.isGroup, opacity: layer.opacity, blendMode: layer.blendMode, maskFile: layer.mask == nil ? nil : "\(layer.id.uuidString).mask.png", maskEnabled: layer.mask?.isEnabled, maskSourceID: layer.maskSourceID, adjustment: layer.adjustment, maskPlacement: layer.mask?.placement, maskLinked: layer.mask?.isLinked, shape: layer.liveShape?.style, vectorPath: layer.liveVectorPath?.style, effects: layer.effects, text: layer.liveText?.style)
+                transform: layer.transform, imageFile: asset?.file(for: layer.id), parentID: layer.parentID, isGroup: layer.isGroup, opacity: layer.opacity, blendMode: layer.blendMode, maskFile: layer.mask == nil ? nil : "\(layer.id.uuidString).mask.png", maskEnabled: layer.mask?.isEnabled, maskSourceID: layer.maskSourceID, adjustment: layer.adjustment, maskPlacement: layer.mask?.placement, maskLinked: layer.mask?.isLinked, shape: layer.liveShape?.style, vectorPath: layer.liveVectorPath?.style, effects: layer.effects, text: layer.liveText?.style, gif: gif)
         }
         return ProjectSnapshot(manifest: ProjectManifest(resolution: document.resolution, documentID: document.id, width: document.width,
             height: document.height, activeLayerID: activeLayerID, layers: layers,
-            guides: document.guides.isEmpty ? nil : document.guides), images: images, masks: masks)
+            guides: document.guides.isEmpty ? nil : document.guides), images: images, masks: masks,
+            animations: animations, frameMasks: frameMasks)
     }
 
     /// Called only after the entire package has successfully validated and loaded.
     func installProject(_ snapshot: ProjectSnapshot, from url: URL) {
+        clearGIFTimeline()
         collapsedGroupIDs = []
         isMaskSelected = false
         cancelCrop()
@@ -54,6 +75,7 @@ extension EditorSession {
     }
 
     func clearProject() {
+        clearGIFTimeline()
         collapsedGroupIDs = []
         isMaskSelected = false
         cancelCrop()
@@ -99,7 +121,8 @@ extension ProjectSnapshot {
                            }
                        },
                        effects: record.effects,
-                       text: LayerText.loaded(record.text, image: images[record.id]?.image))
+                       text: LayerText.loaded(record.text, image: images[record.id]?.image),
+                       gifFrameMasks: frameMasks[record.id] ?? [:], gifAnimation: animations[record.id])
         }
     }
 }
